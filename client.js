@@ -17,8 +17,20 @@ async function initializeWorker(){
   const wrapperVersion=new URL(import.meta.url).searchParams.get('v')||'1';
   const registration=await navigator.serviceWorker.register('./sw.js?v='+wrapperVersion,{scope:'./',updateViaCache:'none'});
   await navigator.serviceWorker.ready;
-  worker=registration.active;
-  if(!navigator.serviceWorker.controller)await new Promise(resolve=>navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true}));
+  const pending=registration.installing||registration.waiting;
+  if(pending&&pending.state!=='activated')await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('页面缓存更新较慢，请刷新重试。')),20000);
+    const check=()=>{if(pending.state==='activated'){clearTimeout(timer);pending.removeEventListener('statechange',check);resolve();}else if(pending.state==='redundant'){clearTimeout(timer);reject(new Error('页面缓存更新失败，请刷新重试。'));}};
+    pending.addEventListener('statechange',check);check();
+  });
+  const active=registration.active;
+  if(!active)throw new Error('页面缓存尚未就绪，请刷新重试。');
+  if(navigator.serviceWorker.controller?.scriptURL!==active.scriptURL)await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('页面缓存切换较慢，请刷新重试。')),20000);
+    const check=()=>{if(navigator.serviceWorker.controller?.scriptURL===active.scriptURL){clearTimeout(timer);navigator.serviceWorker.removeEventListener('controllerchange',check);resolve();}};
+    navigator.serviceWorker.addEventListener('controllerchange',check);check();
+  });
+  worker=navigator.serviceWorker.controller;
 }
 function download(name,bytes,type='application/octet-stream'){
   const url=URL.createObjectURL(new Blob([bytes],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
