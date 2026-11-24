@@ -3,6 +3,9 @@ let bundle = null;
 let worker = null;
 let downloadKey = null;
 let sourcePromise = null;
+navigator.serviceWorker?.addEventListener('message',event=>{
+  if(event.data?.type==='request-session')event.ports[0]?.postMessage(bundle&&downloadKey?{bundle,key:downloadKey}:{bundle:null});
+});
 const fromBase64 = value => Uint8Array.from(atob(value),char=>char.charCodeAt(0));
 async function tell(type, payload = {}) {
   const channel=new MessageChannel();
@@ -11,7 +14,8 @@ async function tell(type, payload = {}) {
 }
 async function initializeWorker(){
   if(!window.isSecureContext || !('serviceWorker' in navigator))throw new Error('请使用 HTTPS 和新版 Chrome / Edge 打开。');
-  const registration=await navigator.serviceWorker.register('./sw.js',{scope:'./'});
+  const wrapperVersion=new URL(import.meta.url).searchParams.get('v')||'1';
+  const registration=await navigator.serviceWorker.register('./sw.js?v='+wrapperVersion,{scope:'./',updateViaCache:'none'});
   await navigator.serviceWorker.ready;
   worker=registration.active;
   if(!navigator.serviceWorker.controller)await new Promise(resolve=>navigator.serviceWorker.addEventListener('controllerchange',resolve,{once:true}));
@@ -24,7 +28,7 @@ function renderFiles(){
   bundle.sourceFiles.filter(file=>file.path.toLowerCase().includes(query)).forEach(file=>{const button=document.createElement('button');button.textContent=file.path;button.onclick=async()=>{
     $('file-name').textContent=file.path;
     $('file-content').textContent='正在读取代码…';
-    try{if(!sourcePromise)sourcePromise=(async()=>{const bytes=await (await fetch('./'+bundle.sourceText.file)).arrayBuffer();const packed=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromBase64(bundle.sourceText.iv)},downloadKey,bytes);return JSON.parse(await new Response(new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'))).text());})();
+    try{if(!sourcePromise)sourcePromise=(async()=>{const bytes=await (await fetch('./'+bundle.sourceText.file+'?v='+encodeURIComponent(bundle.sourceText.iv),{cache:'no-store'})).arrayBuffer();const packed=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromBase64(bundle.sourceText.iv)},downloadKey,bytes);return JSON.parse(await new Response(new Blob([packed]).stream().pipeThrough(new DecompressionStream('gzip'))).text());})();
       const files=await sourcePromise;const source=files.find(item=>item.path===file.path);$('file-content').textContent=source.text===undefined?'此文件为二进制文件，可下载完整代码包后打开。':source.text;
     }catch(error){sourcePromise=null;$('file-content').textContent=error.message;}
   };$('file-list').append(button);});
@@ -45,7 +49,7 @@ function openWorkspace(){
   renderFiles();renderRows();$('download-note').textContent=`代码文件 ${bundle.sourceFiles.length} 个，数据库记录 ${bundle.database.tables.reduce((n,t)=>n+t.rows.length,0)} 条。`;
   for(const item of bundle.downloads){const button=document.createElement('button');button.textContent=`下载 ${item.name}`;button.onclick=async()=>{
     button.disabled=true;button.textContent='正在下载并解锁…';
-    try{const response=await fetch('./'+item.file);if(!response.ok)throw new Error('下载失败，请重试。');
+    try{const response=await fetch('./'+item.file+'?v='+encodeURIComponent(item.iv),{cache:'no-store'});if(!response.ok)throw new Error('下载失败，请重试。');
       const bytes=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromBase64(item.iv)},downloadKey,await response.arrayBuffer());
       const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),v=>v.toString(16).padStart(2,'0')).join('');
       if(digest!==item.sha256)throw new Error('备份校验未通过，请重试。');download(item.name,bytes);
